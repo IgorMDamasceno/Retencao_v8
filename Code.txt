@@ -2130,31 +2130,6 @@ function buildDistributionPlan_(rows, hoursInfo, revshareMap, params) {
     siteShareMap[row.site] = (siteShareMap[row.site] || 0) + totalShare;
   });
 
-  var weightedSiteShareMap = applySiteRpsWeighting_(siteShareMap, siteRows);
-  var siteScalingMap = {};
-  Object.keys(weightedSiteShareMap || {}).forEach(function (siteKey) {
-    var baseValue = Math.max(0, toNumber_(siteShareMap[siteKey] || 0));
-    var finalValue = Math.max(0, toNumber_(weightedSiteShareMap[siteKey] || 0));
-    var factor = 1;
-    if (baseValue > 0) {
-      factor = finalValue / baseValue;
-    } else if (finalValue > 0) {
-      factor = 1;
-    }
-    siteScalingMap[siteKey] = factor;
-  });
-  siteShareMap = weightedSiteShareMap || siteShareMap;
-  globalAggregates.forEach(function (row) {
-    if (!row) return;
-    if (siteScalingMap.hasOwnProperty(row.site)) {
-      var factor = siteScalingMap[row.site];
-      row.suggestedGlobalShare = (row.suggestedGlobalShare || 0) * factor;
-      if (row.betShare != null) {
-        row.betShare = (row.betShare || 0) * factor;
-      }
-    }
-  });
-
   var bestShare = -1;
   var defaultSite = '';
   var siteOutput = [];
