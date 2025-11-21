@@ -7,6 +7,9 @@ const LINK_ROUTER_HISTORY_SHEET = 'Histórico - Link Router';
 const LINK_ROUTER_BASE_URL = 'https://rotasv2.spun.com.br';
 const LINK_ROUTER_TOKEN = '1|crewZvM3pCrHsz9gwWVfzyzQ5IrTk0T7gltREA4d67dc7105';
 const TRAFFIC_TYPES = ['Automação', 'Broadcast', 'Push'];
+const DISTRIBUTION_SITE_RPS_EXPONENT = 1.0;
+const DISTRIBUTION_SITE_WEIGHT_MIN = 0.5;
+const DISTRIBUTION_SITE_WEIGHT_MAX = 2.0;
 const DISTRIBUTION_STATE_SHEET = 'Controle - Distribuição';
 const DISTRIBUTION_CONFIG_SHEET = 'Config - Distribuição';
 const DISTRIBUTION_MINIMUMS_SHEET = 'Config - Distribuição Mínimos';
@@ -4062,6 +4065,60 @@ function annotateDistributionRouteCoverage_(distribution, routeInfo) {
   }
 }
 
+function applySiteRpsWeighting_(siteTotals, siteRows) {
+  siteTotals = siteTotals || {};
+  siteRows = siteRows || [];
+  var siteRowMap = {};
+  var maxSiteRps = 0;
+  siteRows.forEach(function (siteRow) {
+    if (!siteRow || !siteRow.site) {
+      return;
+    }
+    var siteKey = siteRow.site;
+    siteRowMap[siteKey] = siteRow;
+    var siteRps = Math.max(0, toNumber_(siteRow.rps != null ? siteRow.rps : 0));
+    if (siteRps > maxSiteRps) {
+      maxSiteRps = siteRps;
+    }
+  });
+  var siteKeys = Object.keys(siteTotals);
+  if (!siteKeys.length) {
+    return siteTotals;
+  }
+  var baseTotal = 0;
+  siteKeys.forEach(function (site) {
+    baseTotal += Math.max(0, toNumber_(siteTotals[site] || 0));
+  });
+  if (baseTotal <= 0) {
+    return siteTotals;
+  }
+  var adjustedTotals = {};
+  var sumAdjustedTotals = 0;
+  siteKeys.forEach(function (site) {
+    var baseShare = Math.max(0, toNumber_(siteTotals[site] || 0));
+    var normalized = 1;
+    if (maxSiteRps > 0 && siteRowMap.hasOwnProperty(site)) {
+      var siteRps = Math.max(0, toNumber_(siteRowMap[site].rps || 0));
+      normalized = siteRps / maxSiteRps;
+    }
+    normalized = clamp_(normalized, 0, 1);
+    var weight = Math.pow(normalized, DISTRIBUTION_SITE_RPS_EXPONENT);
+    weight = clamp_(weight, DISTRIBUTION_SITE_WEIGHT_MIN, DISTRIBUTION_SITE_WEIGHT_MAX);
+    var adjusted = baseShare * weight;
+    adjustedTotals[site] = adjusted;
+    sumAdjustedTotals += adjusted;
+  });
+  if (sumAdjustedTotals <= 0) {
+    return siteTotals;
+  }
+  var normalizationFactor = baseTotal / sumAdjustedTotals;
+  var result = {};
+  siteKeys.forEach(function (site) {
+    result[site] = adjustedTotals[site] * normalizationFactor;
+  });
+  return result;
+}
+
 function scaleDistributionSharesForMissingRoutes_(distribution, availableShare, reservedShare) {
   if (!distribution || !distribution.globalUrls) {
     return;
@@ -4090,15 +4147,38 @@ function scaleDistributionSharesForMissingRoutes_(distribution, availableShare, 
     }
     siteTotals[row.site] = (siteTotals[row.site] || 0) + scaledGlobal;
   });
+  var weightedSiteTotals = applySiteRpsWeighting_(siteTotals, distribution.sites || []);
+  var siteScalingMap = {};
+  Object.keys(weightedSiteTotals || {}).forEach(function (siteKey) {
+    var baseValue = Math.max(0, toNumber_(siteTotals[siteKey] || 0));
+    var finalValue = Math.max(0, toNumber_(weightedSiteTotals[siteKey] || 0));
+    var factor = 1;
+    if (baseValue > 0) {
+      factor = finalValue / baseValue;
+    } else if (finalValue > 0) {
+      factor = 1;
+    }
+    siteScalingMap[siteKey] = factor;
+  });
+  siteTotals = weightedSiteTotals || siteTotals;
+  allRows.forEach(function (row) {
+    if (!row) return;
+    if (siteScalingMap.hasOwnProperty(row.site)) {
+      var factor = siteScalingMap[row.site];
+      row.suggestedGlobalShare = (row.suggestedGlobalShare || 0) * factor;
+      if (row.betShare != null) {
+        row.betShare = (row.betShare || 0) * factor;
+      }
+    }
+  });
   var siteSessionsMap = {};
   (distribution.sites || []).forEach(function (siteRow) {
     if (!siteRow) return;
-    var baseShare = toNumber_(siteRow.suggestedShare || 0) / previousScaleSafe;
-    var scaledShare = baseShare * scale;
-    siteRow.suggestedShare = scaledShare;
-    var suggestedSessions = scaledShare * totalSessions;
+    var finalShare = Math.max(0, toNumber_(siteTotals[siteRow.site] || 0));
+    siteRow.suggestedShare = finalShare;
+    var suggestedSessions = finalShare * totalSessions;
     siteRow.suggestedSessions = suggestedSessions;
-    siteRow.deltaShare = scaledShare - (siteRow.currentShare || 0);
+    siteRow.deltaShare = finalShare - (siteRow.currentShare || 0);
     siteSessionsMap[siteRow.site] = suggestedSessions;
   });
   allRows.forEach(function (row) {
